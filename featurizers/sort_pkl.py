@@ -32,9 +32,11 @@ def organizeData():
             smiles = line[0]
             identifier = line[1]
             tox = (line[2])
-            toxicity.append(tox)
-            ids.append(identifier)
-            all_smiles.append(smiles)
+            
+            if not smiles in all_smiles: 
+                toxicity.append(tox)
+                ids.append(identifier)
+                all_smiles.append(smiles)
 
 
     #Create node for each compound
@@ -68,16 +70,16 @@ def organizeData():
                 dc.feat.graph_features.one_of_k_encoding_unk(types[index], kcfList) + \
                 dc.feat.graph_features.one_of_k_encoding(atom.GetDegree(), [0, 1, 2, 3, 4, 5, 6, 7, 8]) +\
                 [atom.GetFormalCharge(), atom.GetNumRadicalElectrons(), atom.GetIsAromatic()] +\
-                [int(atom.IsInRing())] +\
+                [float(atom.IsInRing())] +\
                 [atom.GetExplicitValence(), atom.GetMass(), atom.GetChiralTag(), atom.GetTotalNumHs()]
-                 # Append each atom feature array to the feature array for the whole drug
+                  # Append each atom feature array to the feature array for the whole drug
                 x_arr.append(atom_arr)
             
             
          
             #Turn x array into tensor 
             x_list = torch.tensor(x_arr)
-            x_list = x_list.int()
+            x_list = x_list.float()
             elements = [atom.GetSymbol() for atom in drug.GetAtoms()]
             edges = list()
             
@@ -86,7 +88,7 @@ def organizeData():
             # print(x_list.size(), y_list.size())
             
             #Edges
-            edgeIndex = torch.zeros((2, drug.GetNumBonds() * 2), dtype=torch.int64)
+            edgeIndex = torch.zeros((2, drug.GetNumBonds() * 2), dtype=torch.float32)
             for bond in drug.GetBonds():
                 i = bond.GetIdx()
                 edgeIndex[0][i * 2] = bond.GetBeginAtomIdx()
@@ -116,13 +118,19 @@ def createSplits(size, removeDrug):
     numbers = list(range(0, size-1))
     random.shuffle(numbers)
     
-    trainSize = int(0.7*size)
-    validSize = int((size - trainSize) / 2)
-    testSize = size - (trainSize+validSize+1)
+    trainSize = int(0.8*(size)) 
 
     train = numbers[:trainSize]
-    valid = numbers[trainSize: validSize+trainSize]
-    test = numbers[validSize+trainSize:]
+    valid = numbers[trainSize:]
+    test = valid
+    
+    # trainSize = int(0.7*size)
+    # validSize = int((size - trainSize) / 2)
+    # testSize = size - (trainSize+validSize+1)
+
+    # train = numbers[:trainSize]
+    # valid = numbers[trainSize: validSize+trainSize]
+    # test = numbers[validSize+trainSize:]
     
     #Remove drugs with invalid mols (from rdkit)
     for position in removeDrug:
@@ -139,19 +147,19 @@ with open('/Users/sammiechum/Downloads/gnntox/data/dataset_addprop_encode.pkl', 
     records = pickle.load(f)
     # del records['features']['enzyme']
     for i in range(10):
-        train, valid, test = createSplits(8947, remove_drug)
+        train, valid, test = createSplits(7230, remove_drug)
         records['splits'][i]['train'] = train
         records['splits'][i]['valid'] = valid
         records['splits'][i]['test'] = test
     records['features']['element'] = elementList
     records['features']['kcfType'] = kcfList
     records['features']['degree'] = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    #Add in rest of features if needed like above format
     mols = organizeData()
     records['mols'] = mols
         
 with open('/Users/sammiechum/Downloads/gnntox/data/dataset2_addprop_encode.pkl', "wb") as file:
     # Dump the dictionary into the pickle file
     pickle.dump(records, file)
-    # print((records['mols'][7]['node']['x']).size())
-    # print((records['mols'][7]['node']['y']).size())
     
+
