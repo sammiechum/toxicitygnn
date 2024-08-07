@@ -26,7 +26,7 @@ def organizeData():
     ids = list()
     all_smiles = list()
 
-    with open('/Users/sammiechum/Downloads/complete_tox_dataset.txt', 'r') as f:
+    with open('../data/complete_tox_dataset.txt', 'r') as f:
         for line in f:
             line = line.split()
             smiles = line[0]
@@ -143,7 +143,7 @@ def createSplits(size, removeDrug):
     
     return train, valid, test
     
-with open('/Users/sammiechum/Downloads/gnntox/data/dataset_addprop_encode.pkl', 'rb') as f:
+with open('../data/dataset_addprop_encode.pkl', 'rb') as f:
     records = pickle.load(f)
     # del records['features']['enzyme']
     for i in range(10):
@@ -158,7 +158,7 @@ with open('/Users/sammiechum/Downloads/gnntox/data/dataset_addprop_encode.pkl', 
     mols = organizeData()
     records['mols'] = mols
         
-with open('/Users/sammiechum/Downloads/gnntox/data/dataset2_addprop_encode.pkl', "wb") as file:
+with open('../data/dataset2_addprop_encode.pkl', "wb") as file:
     # Dump the dictionary into the pickle file
     pickle.dump(records, file)
     
