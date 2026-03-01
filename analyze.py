@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
+"""
+analyze.py
 
+Evaluates saved GNN prediction files against the ground-truth dataset.
+Computes per-molecule and atomic-level metrics including AUROC, R-Precision,
+Precision@K, and Top-2 Correctness Rate, with random-chance baselines.
+
+Usage:
+    python analyze.py <results-file> [--dist] [--test] [--force-kcf] [--cyp | --noncyp]
+"""
+
+import argparse
 from os.path import isfile
 import pickle
 import sys
@@ -9,20 +20,33 @@ from sklearn.metrics import roc_auc_score
 # Concordance is equivalent to AUROC assuming binary outcomes, see
 # https://bmcmedresmethodol.biomedcentral.com/articles/10.1186/1471-2288-12-82
 
-try:
-    filename = sys.argv[1]
-except:
-    print('Usage: %s results-filename [--dist] [--test] [--export] [--force-kcf] [--cyp/noncyp]' % sys.argv[0])
-    exit()
-reportDistribution = '--dist' in sys.argv
-testMode = '--test' in sys.argv
-considerCyp = '--cyp' in sys.argv
-considerNonCyp = '--noncyp' in sys.argv
+parser = argparse.ArgumentParser(
+    description='Evaluate GNN SOM predictions against ground-truth dataset.'
+)
+parser.add_argument('filename', type=str,
+                    help='Path to the predictions pickle file')
+parser.add_argument('--dist', action='store_true',
+                    help='Report and plot score distributions for true SOMs vs non-SOMs')
+parser.add_argument('--test', action='store_true',
+                    help='Evaluate on the test set instead of the validation set')
+parser.add_argument('--force-kcf', action='store_true',
+                    help='Force use of the KCF dataset even if filename contains -nokcf')
+parser.add_argument('--cyp', action='store_true',
+                    help='Restrict evaluation to CYP substrates only')
+parser.add_argument('--noncyp', action='store_true',
+                    help='Restrict evaluation to non-CYP substrates only')
+args = parser.parse_args()
+
+filename = args.filename
+reportDistribution = args.dist
+testMode = args.test
+considerCyp = args.cyp
+considerNonCyp = args.noncyp
 
 print(' '.join(sys.argv))
 
 useDatasetWithKcfTypes = True
-if '-nokcf' in filename and not '--force-kcf' in sys.argv:
+if '-nokcf' in filename and not args.force_kcf:
     useDatasetWithKcfTypes = False
 
 if useDatasetWithKcfTypes:
@@ -64,26 +88,30 @@ if set(expectedMolIndices) != set(predictions.keys()):
     print(sorted(set(predictions.keys()))[0:20])
     exit()
 
+
 def expectedRPrecision(relevant, total):
-    retrieved = 0 # expected number of ones picked
-    for i in range(relevant): # ...over R attempts
+    """Compute expected R-Precision under a random ranking baseline."""
+    retrieved = 0
+    for i in range(relevant):
         retrieved += (relevant - i) / (total - i)
     return retrieved / relevant
 
+
 def expectedTopTwoCorrectness(relevant, total):
+    """Compute expected Top-2 Correctness Rate under a random ranking baseline."""
     top = 2
-    retrieved = 0 # expected number of ones picked
-    for i in range(top): # ...over the top N attempts
+    retrieved = 0
+    for i in range(top):
         retrieved += (relevant - i) / (total - i)
     return retrieved / top
 
+
 molRPrec = 0
 molRPrecExpect = 0
-molPrecAtK = [0, 0, 0] # indices represent (k - 1)
+molPrecAtK = [0, 0, 0]  # indices represent (k - 1)
 molPrecAtKCount = [0, 0, 0]
 molAuroc = 0
 molAurocCount = 0
-# molAurocExpect = 0.5 https://stats.stackexchange.com/questions/346184/what-is-the-expected-value-of-aurocc-for-random-predictions, see "3.1. Random performance" in fawcett2006
 molTopTwoCorrect = 0
 molTopTwoCorrectExpect = 0
 
