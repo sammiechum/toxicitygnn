@@ -1,7 +1,37 @@
+"""
+som.models.py
+
+GNN model factory and state-loading utilities for node-level Site of Metabolism
+(SOM) prediction. Provides a ChebConv-only model builder used by the SOM prediction
+pipeline, and a compatibility shim for loading state dicts saved with pre-2.0.0
+versions of PyTorch Geometric.
+"""
+
 import torch.nn as nn
 import torch_geometric.nn as gnn
 
+
 def createSomGnn(convName, width, depth, featureCount, forEmbedding):
+    """Build a sequential Chebyshev GNN for node-level SOM prediction.
+
+    Args:
+        convName: Convolution operator name. Supported values:
+                  'mf0'–'mf10'  MFConv with max_degree 0/1/2/5/10
+                  'gcn'         GCNConv (improved=True)
+                  'cheb1k'–'cheb15k'  ChebConv with K=1/2/3/4/5/10/15
+                  'gat'         GATv2Conv
+                  'arma'        ARMAConv (5 stacks, 1 layer)
+                  'gin'/'gin2'/'gin3'/'ginte'/'gin2te'  GINConv variants
+        width: Hidden layer width.
+        depth: Number of graph convolutional layers.
+        featureCount: Number of input node features.
+        forEmbedding: If True, omit the final scalar output layer (used for
+                      embedding extraction rather than prediction).
+
+    Returns:
+        A torch_geometric.nn.Sequential model that takes (x, edge_index) and
+        outputs one scalar per node (or node embeddings if forEmbedding=True).
+    """
     if convName == 'mf0':
         conv = lambda a, b: gnn.MFConv(a, b, max_degree=0)
     elif convName == 'mf1':
