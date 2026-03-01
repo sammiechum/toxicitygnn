@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
+"""
+gnn-node.py
+
+Baseline training script for node-level Site of Metabolism (SOM) prediction.
+Trains a GNN to classify individual atoms within drug molecules
+as metabolic sites or non-sites, using weighted binary cross-entropy to handle
+class imbalance. Predictions are saved to a pickle file for further evaluation.
+
+Usage:
+    python gnn-node.py [--gpu=N] [--width=N] [--depth=N] [--conv=NAME]
+                       [--epochs=N] [--split=N] [--cyp] [--noncyp]
+                       [--nokcf] [--noadj] [--save] [--haneen]
+"""
 
 import os
 import sys
-from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
-from sklearn.metrics import accuracy_score, confusion_matrix, balanced_accuracy_score
-import numpy as np 
+from torch_geometric.nn import global_add_pool
+from sklearn.metrics import roc_auc_score, balanced_accuracy_score
+import numpy as np
 
 gpuIndex = 0
 
@@ -21,9 +34,7 @@ modelType = 'SomGnnNode'
 considerCyp = False
 considerNonCyp = False
 for arg in sys.argv:
-    if arg.startswith('--data='):
-        datasetName = arg.split('=', 1)[1]
-    elif arg.startswith('--gpu'):
+    if arg.startswith('--gpu'):
         gpuIndex = int(arg.split('=', 1)[1])
     elif arg.startswith('--width='):
         width = int(arg.split('=', 1)[1])
@@ -31,8 +42,6 @@ for arg in sys.argv:
         depth = int(arg.split('=', 1)[1])
     elif arg.startswith('--conv='):
         conv = arg.split('=', 1)[1]
-    elif arg.startswith('--pool='):
-        pool = arg.split('=', 1)[1]
     elif arg.startswith('--epochs='):
         epochs = int(arg.split('=', 1)[1])
     elif arg.startswith('--split='):
@@ -49,27 +58,27 @@ for arg in sys.argv:
         saveModel = True
     elif arg == '--haneen':
         modelType += 'H'
-        
-###
+
 
 import torch.nn as nn
 import torch_geometric.nn as gnn
 from torch_geometric import __version__ as pygVersion
 
-class CustomQPLayer(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(CustomQPLayer, self).__init__()
-        self.linear = torch.nn.Linear(input_dim, output_dim)
-    
-    def forward(self,x,qp_vector):
-        #print(x.shape, qp_vector.shape)
-        full_x = torch.concat((x,qp_vector), dim=1)
-        out = self.linear(full_x)
-        return out
 
+def createSomGnn(convName, width, depth, featureCount, forEmbedding):
+    """Build a sequential GNN for node-level SOM prediction.
 
-def createSomGnn(convName, poolName, width, depth, featureCount, forEmbedding, edge_featureCount=32, edge_attr_exist=False, use_qp=False):
-    used_edge_dim = False
+    Args:
+        convName: Graph convolution operator name (e.g. 'cheb', 'gat', 'gin').
+        width: Hidden layer width.
+        depth: Number of graph convolutional layers.
+        featureCount: Number of input node features.
+        forEmbedding: If True, omit the final output layer (used for embedding extraction).
+
+    Returns:
+        A torch_geometric.nn.Sequential model outputting one scalar per node (or
+        embeddings if forEmbedding=True), with global_add_pool applied at the end.
+    """
     if convName == 'mf0':
         conv = lambda a, b: gnn.MFConv(a, b, max_degree=0)
     elif convName == 'mf1':
@@ -96,64 +105,8 @@ def createSomGnn(convName, poolName, width, depth, featureCount, forEmbedding, e
         conv = lambda a, b: gnn.ChebConv(a, b, K=10)
     elif convName == 'cheb15k':
         conv = lambda a, b: gnn.ChebConv(a, b, K=15)
-    
     elif convName == 'gat':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.GATv2Conv(a, b, edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.GATv2Conv(a, b)
-    elif convName == 'resgat':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.ResGatedGraphConv(a, b, edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.ResGatedGraphConv(a, b)
-    elif convName == 'transform':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.TransformerConv(a, b, edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.TransformerConv(a, b)
-    elif convName == 'transform':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.TransformerConv(a, b, edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.TransformerConv(a, b)        
-    elif convName == 'gine':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.GINEConv(nn.Linear(a, b), edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.GINEConv(nn.Linear(a, b))
-    elif convName == 'crystal':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.CGConv((a, b), dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.CGConv((a, b))  
-    elif convName == 'gen':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.GENConv(a, b, edge_dim=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.GENConv(a, b)    
-    elif convName == 'path':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.PDNConv(a, b, edge_dim=edge_featureCount, hidden_channels=64)
-            used_edge_dim = True
-        else:
-            raise Exception('Invalid convolution to use without edge attributes')        
-    elif convName == 'general':
-        if edge_attr_exist:
-            conv = lambda a, b: gnn.GeneralConv(a, b, in_edge_channels=edge_featureCount)
-            used_edge_dim = True
-        else:
-            conv = lambda a, b: gnn.GeneralConv(a, b)           
-    
-            
-    
+        conv = lambda a, b: gnn.GATv2Conv(a, b)
     elif convName == 'arma':
         conv = lambda a, b: gnn.ARMAConv(a, b, num_stacks=5, num_layers=1)
     elif convName == 'gin':
@@ -171,52 +124,30 @@ def createSomGnn(convName, poolName, width, depth, featureCount, forEmbedding, e
 
     layerSizes = [featureCount] + [width] * depth
     if not forEmbedding:
-        if not use_qp:
-            layerSizes += [1]
-        else:
-            layerSizes += [77]
+        layerSizes += [1]
 
     modules = []
     for i in range(len(layerSizes) - 1):
-        if not used_edge_dim:
-            modules.append((conv(layerSizes[i], layerSizes[i + 1]), 'x, edge_index -> x'))
-        else:
-            modules.append((conv(layerSizes[i], layerSizes[i + 1]), 'x, edge_index, edge_attr -> x'))
+        modules.append((conv(layerSizes[i], layerSizes[i + 1]), 'x, edge_index -> x'))
         if forEmbedding or i != len(layerSizes) - 2:
             modules.append(nn.ReLU())
             modules.append(nn.Dropout(0.5))
-    
-    # Add in the modularity of the pooling layer
-    # modules.append((global_add_pool, 'x, batch -> x'))
-    
-    if poolName == 'add':
-        modules.append((global_add_pool, 'x, batch -> x'))
-    elif poolName == 'mean':
-        modules.append((global_mean_pool, 'x, batch -> x'))
-    elif poolName == 'max':
-        modules.append((global_max_pool, 'x, batch -> x'))
-    else:
-        raise Exception('Unknown pooling operator ' + poolName)
-       
-       
-    if use_qp:
-        modules.append((CustomQPLayer(128,1), 'x, qp_vector -> x'))
-    
-        if used_edge_dim:
-            return gnn.Sequential('x, edge_index, edge_attr, qp_vector, batch', modules), used_edge_dim
-        else:
-            return gnn.Sequential('x, edge_index, qp_vector, batch', modules), used_edge_dim
-    
-    else: 
-        # modules.append(nn.Sigmoid())
-        
-        if used_edge_dim:
-            return gnn.Sequential('x, edge_index, edge_attr, batch', modules), used_edge_dim
-        else:
-            return gnn.Sequential('x, edge_index, batch', modules), used_edge_dim
+    modules.append((global_add_pool, 'x, batch -> x'))
+    return gnn.Sequential('x, edge_index, batch', modules)
+
 
 def loadGnnSomState(model, state):
-    if pygVersion.startswith('2.'): # convert pre-2.0.0 state format to current
+    """Load a saved state dict into a GNN model, handling pre-2.0.0 PyG format.
+
+    PyTorch Geometric 2.0.0 changed the internal parameter naming convention for
+    ChebConv. This function converts older state dicts to the current format before
+    calling load_state_dict.
+
+    Args:
+        model: The GNN model to load weights into.
+        state: A state dict, either in current or pre-2.0.0 PyG format.
+    """
+    if pygVersion.startswith('2.'):
         newState = {}
         for name, value in state.items():
             nns, index, weightOrBias = name.split('.')
@@ -232,14 +163,12 @@ def loadGnnSomState(model, state):
                 raise Exception('Unexpected state parameter')
         state = newState
     model.load_state_dict(state)
-    
+
 ###
 
-# datasetName = 'dataset3_addprop_encode'
-# datasetName = 'dataset_partial' #Old dataset with kcf and element features only
+datasetName = 'dataset2_addprop_encode'
 
-modelName = '%s-%s-%s%dx%d-%depochs' % (modelType, conv, pool, width, depth, epochs)
-#modelName = '%s-%s%dx%d-%depochs' % (modelType, conv, width, depth, epochs)
+modelName = '%s-%s%dx%d-%depochs' % (modelType, conv, width, depth, epochs)
 if considerCyp != considerNonCyp:
     if considerCyp:
         modelName += '-cyp'
@@ -269,14 +198,20 @@ import torch.nn as nn
 from torch_geometric.data import Data, DataLoader, Batch
 from sklearn.metrics import roc_auc_score
 
-# from gnntox import createSomGnn
-
 random.seed(123)
 torch.manual_seed(123)
 
 
-
 def convertMolRecordsToData(mols):
+    """Convert molecule records from the dataset pickle into PyG Data objects.
+
+    Args:
+        mols: List of molecule dicts from the dataset, each containing 'node' data.
+
+    Returns:
+        Tuple of (dataList, batchList) where dataList is a list of PyG Data objects
+        and batchList maps each atom to its molecule index.
+    """
     batchList = list()
     dataList = []
     for i, mol in enumerate(mols):
@@ -287,88 +222,37 @@ def convertMolRecordsToData(mols):
                 continue
 
         molData = mol['node']
-        # x = torch.FloatTensor(molData['x'])
-        if molData['x'].shape[1] > 140: # use qikprop
-            x_plus_qp = mol['node']['x']
-            x = x_plus_qp[:,:-51]
-            qp_vector = x_plus_qp[0:1,-51:]
-            used_qp = True
-            
-        else:
-            x = (molData['x'])
-            qp_vector = None
-            used_qp = True
-            
+        x = (molData['x'])
         y = torch.unsqueeze(torch.FloatTensor(molData['y']), 0)
-        
+
         atomCount = (molData['x'].size()[0])
-        
-        for j in range (int(atomCount)):
+
+        for j in range(int(atomCount)):
             batchList.append(i)
 
-
         edgeNum = len(molData['edges'])
-        edgeIndex = torch.zeros((2, edgeNum), dtype=torch.int64)
-        for j, (a1, a2) in enumerate(molData['edges'][:(len(molData['edges'])//2)]):
+        edgeIndex = torch.zeros((2, edgeNum * 2), dtype=torch.int64)
+        for j, (a1, a2) in enumerate(molData['edges']):
             edgeIndex[0][j * 2] = a1
             edgeIndex[1][j * 2] = a2
             edgeIndex[0][j * 2 + 1] = a2
             edgeIndex[1][j * 2 + 1] = a1
-            
-        if "edge_attr" in molData: 
-            edge_attributes = molData["edge_attr"]
-            edge_attr = True
-            if used_qp:
-                dataList.append(Data(x=x, y=y, edge_index=edgeIndex, edge_attr=edge_attributes, qp_vector=qp_vector, datasetIndex=i))
-            else:
-                dataList.append(Data(x=x, y=y, edge_index=edgeIndex, edge_attr=edge_attributes, datasetIndex=i))
-            
-        else:
-            edge_attr = False
-            if used_qp:
-                dataList.append(Data(x=x, y=y, edge_index=edgeIndex, qp_vector=qp_vector, datasetIndex=i))
-            else:
-                dataList.append(Data(x=x, y=y, edge_index=edgeIndex, datasetIndex=i))
-    # print(len(batchList))
-    # batchList = torch.tensor(batchList)
-    return dataList, batchList, edge_attr, used_qp
 
+        dataList.append(Data(x=x, y=y, edge_index=edgeIndex, datasetIndex=i))
+    return dataList, batchList
 
 
 with open('data/%s.pkl' % datasetName, 'rb') as f:
     records = pickle.load(f)
-    
-        
-    # print((records['mols'][7]['node']['x']).size())
-    # print((records['mols'][7]['node']['y']).size())
 
-trainMolecules, batchListT, edge_attr_exist, used_qp = convertMolRecordsToData([records['mols'][i] for i in records['splits'][split]['train'] if i < len(records['mols'])])
-validMolecules, batchListV, edge_attr_exist, used_qp = convertMolRecordsToData([records['mols'][i] for i in records['splits'][split]['valid'] if i < len(records['mols'])])
-# testMolecules, batchListTe = convertMolRecordsToData([records['mols'][i] for i in records['splits'][split]['test']])
-
+trainMolecules, batchListT = convertMolRecordsToData([records['mols'][i] for i in records['splits'][split]['train']])
+validMolecules, batchListV = convertMolRecordsToData([records['mols'][i] for i in records['splits'][split]['valid']])
 
 featureCount = trainMolecules[0].x.shape[1]
 device = torch.device('cuda:%d' % gpuIndex if torch.cuda.is_available() else 'cpu')
-if not edge_attr_exist:
-    if not used_qp:
-        model, used_edge = createSomGnn(conv, pool, width, depth, featureCount, forEmbedding=False, use_qp=False)
-    else:
-        model, used_edge = createSomGnn(conv, pool, width, depth, featureCount, forEmbedding=False, use_qp=True)
-else:
-    edge_featureCount = trainMolecules[0].edge_attr.shape[1]
-    if not used_qp:
-        model, used_edge = createSomGnn(conv, pool, width, depth, featureCount, forEmbedding=False, edge_featureCount=edge_featureCount, edge_attr_exist=True, use_qp=False)
-    else: 
-        model, used_edge = createSomGnn(conv, pool, width, depth, featureCount, forEmbedding=False, edge_featureCount=edge_featureCount, edge_attr_exist=True, use_qp=True)
-        
-model = model.to(device)
+model = createSomGnn(conv, width, depth, featureCount, forEmbedding=False).to(device)
 
-############### Things to play around with ################
-num_batches = 16           # Default was 4
-learning_rate = 0.001      # Default was 0.001
-###########################################################
-
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
 positives = 0
 negatives = 0
@@ -381,100 +265,50 @@ for mol in trainMolecules:
 print('Found %d positive and %d negative SOM examples (total %d)' % (positives, negatives, positives + negatives))
 posWeight = torch.FloatTensor([negatives / positives]).to(device)
 
-trainLoader = DataLoader(trainMolecules, batch_size=round(len(trainMolecules) // num_batches)+1)
+num_batches = 4
+trainLoader = DataLoader(trainMolecules, batch_size=round(len(trainMolecules) / num_batches))
 validLoader = DataLoader(validMolecules, batch_size=len(validMolecules))
-# testLoader = DataLoader(testMolecules, batch_size=len(testMolecules))
 
-batchListTSize = round(len(trainMolecules) // num_batches)+1
+batchListTSize = round(len(trainMolecules) / num_batches)
 batchListTList = list()
 
 pos = 0
-
-for _ in range(num_batches-1):
+for _ in range(num_batches - 1):
     subBatch = list()
     unique = 0
-    while not unique == batchListTSize+1:
-        if not batchListT[pos] in subBatch:
+    while unique != batchListTSize + 1:
+        if batchListT[pos] not in subBatch:
             unique += 1
-        if not unique == batchListTSize+1:
+        if unique != batchListTSize + 1:
             subBatch.append(batchListT[pos])
-            pos+=1
+            pos += 1
     batchListTList.append(subBatch)
-'''
-subBatch = list()
-unique = 0
-while not unique == batchListTSize+1:
-    if not batchListT[pos] in subBatch:
-        unique += 1
-    if not unique == batchListTSize+1:
-        subBatch.append(batchListT[pos])
-        pos+=1
-batchListTList.append(subBatch)
 
-subBatch = list()
-unique = 0
-while not unique == batchListTSize+1:
-    if not batchListT[pos] in subBatch:
-        unique += 1
-    if not unique == batchListTSize+1:
-        subBatch.append(batchListT[pos])
-        pos+=1
-batchListTList.append(subBatch)
-'''
+batchListTList.append(batchListT[pos:])
 
-subBatch= batchListT[pos:]
-batchListTList.append(subBatch)
+batchListTList = [torch.tensor(sublist) for sublist in batchListTList]
+batchListV = torch.tensor(batchListV)
 
-batchListTList = [torch.tensor(sublist).to(device) for sublist in batchListTList]
-batchListV = torch.tensor(batchListV).to(device)
-# batchListTe = torch.tensor(batchListTe)
-    
 BOLD = '\u001b[1m'
 RED = '\u001b[31m'
-GREEN = '\u001b[32m'
-YELLOW = '\u001b[33m'
 BLUE = '\u001b[34m'
 RESET = '\u001b[0m'
 MARKER_TRAIN = BOLD + BLUE + 'o' + RESET
 MARKER_VALID = BOLD + RED + 'x' + RESET
 
-#      00:00:00 ----9----=======15======-------15------                        10 ea.
 print('Time     Epoch    Train AUC (1)  Valid AUC (2)  |50       |60       |70       |80       |90       |100%'.
       replace('(1)', '(' + MARKER_TRAIN + ')').replace('(2)', '(' + MARKER_VALID + ')'))
 
 for epoch in range(epochs):
     model.train()
-    qp_vector_historical_record = torch.zeros(0,51).to(device)
     for k, moleculesBatch in enumerate(trainLoader):
         batch = moleculesBatch.to(device)
         optimizer.zero_grad()
 
-        if used_edge:
-            if used_qp:
-                qp_vector_historical_record = torch.concat((qp_vector_historical_record, batch.qp_vector), dim=0)
-                pred = model(batch.x, batch.edge_index, batch.edge_attr, qp_vector_historical_record, batchListTList[k])
-            else:
-                pred = model(batch.x, batch.edge_index, batch.edge_attr, batchListTList[k])
-        else:
-            if used_qp:
-                qp_vector_historical_record = torch.concat((qp_vector_historical_record, batch.qp_vector), dim=0)
-                pred = model(batch.x, batch.edge_index, qp_vector_historical_record, batchListTList[k])
-            else:
-                pred = model(batch.x, batch.edge_index, batchListTList[k])
-        
-        pred = pred[batchListTSize*k:]
-        '''
-        if k==1:
-            pred = pred[batchListTSize:]
-        elif k==2:
-            pred = pred[batchListTSize*2:]
-        elif k==3:
-            pred = pred[batchListTSize*3:]
-        '''
-        # print(len(batch.x), len(batch.y))
-        # print(len(batch.y),len(pred))
-        loss = nn.functional.binary_cross_entropy_with_logits(pred, batch.y, pos_weight=posWeight)
+        pred = model(batch.x, batch.edge_index, batchListTList[k])
+        pred = pred[batchListTSize * k:]
 
+        loss = nn.functional.binary_cross_entropy_with_logits(pred, batch.y, pos_weight=posWeight)
         loss.backward()
         optimizer.step()
 
@@ -486,67 +320,26 @@ for epoch in range(epochs):
             predictions = []
             trueLabels = []
             with torch.no_grad():
-                qp_vector_historical_record = torch.zeros(0,51).to(device)
                 for l, moleculesBatch in enumerate(loader):
                     batch = moleculesBatch.to(device)
                     if loader == trainLoader:
-                        
-                        if used_edge:
-                            if used_qp:
-                                qp_vector_historical_record = torch.concat((qp_vector_historical_record, batch.qp_vector), dim=0)
-                                pred = model(batch.x, batch.edge_index, batch.edge_attr, qp_vector_historical_record, batchListTList[l])
-                            else:
-                                pred = model(batch.x, batch.edge_index, batch.edge_attr, batchListTList[l])
-                        else:
-                            if used_qp:
-                                qp_vector_historical_record = torch.concat((qp_vector_historical_record, batch.qp_vector), dim=0)
-                                pred = model(batch.x, batch.edge_index, qp_vector_historical_record, batchListTList[l])
-                            else:
-                                pred = model(batch.x, batch.edge_index, batchListTList[l])
-                        
-                        
-                        pred = pred[batchListTSize*l:]
-                        '''
-                        if l==1:
-                            pred = pred[batchListTSize:]
-                        elif l==2:
-                            pred = pred[batchListTSize*2:]
-                        elif l==3:
-                            pred = pred[batchListTSize*3:]
-                        '''
-                    
+                        pred = model(batch.x, batch.edge_index, batchListTList[l])
+                        pred = pred[batchListTSize * l:]
                     else:
-                        if used_edge:
-                            if used_qp:
-                                pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.qp_vector, batchListV)
-                            else:
-                                pred = model(batch.x, batch.edge_index, batch.edge_attr, batchListV)
-                        else:
-                            if used_qp:
-                                pred = model(batch.x, batch.edge_index, batch.qp_vector, batchListV)
-                            else:
-                                pred = model(batch.x, batch.edge_index, batchListV)
-                    
+                        pred = model(batch.x, batch.edge_index, batchListV)
+
                     threshold = 0.5
-                    
+
                     predictions.extend(torch.sigmoid(pred).cpu().numpy())
                     trueLabels.extend(moleculesBatch.y.cpu().numpy())
-                    
-                    # Threshold probabilities
-                    adjpredictions = list()
-                    for value in predictions:
-                        if value < threshold:
-                            adjpredictions.append(0)
-                        else:
-                            adjpredictions.append(1)
-                    
+
+                    adjpredictions = [1 if value >= threshold else 0 for value in predictions]
                     trueLabels = [int(value) for value in trueLabels]
-                    adjpredictions = [int(value) for value in adjpredictions]
-                    
+
             score = roc_auc_score(trueLabels, predictions)
             acc = balanced_accuracy_score(trueLabels, adjpredictions)
 
-            print('%-15f' % score, end='', flush=True)
+            print('%-15f' % acc, end='', flush=True)
             x = round((acc - 0.5) / 0.01)
             if 0 <= x < len(bar):
                 bar[x] = marker
@@ -557,29 +350,29 @@ if saveModel:
 
 model.eval()
 
+
 def makePredictions(molecules, batchlist):
-    preds = {} # molecule index in dataset: predicted labels
+    """Run inference on a set of molecules and return per-atom predictions.
+
+    Args:
+        molecules: List of PyG Data objects.
+        batchlist: Tensor mapping each atom to its molecule index.
+
+    Returns:
+        Dict mapping dataset molecule index to list of predicted SOM scores.
+    """
+    preds = {}
     with torch.no_grad():
         for molecule in molecules:
-            if used_edge:
-                if used_qp:
-                    pred = torch.sigmoid(model(molecule.x.to(device), molecule.edge_index.to(device), molecule.edge_attr.to(device), molecule.qp_vector.to(device), batchlist.to(device))).cpu()
-                else:
-                    pred = torch.sigmoid(model(molecule.x.to(device), molecule.edge_index.to(device), molecule.edge_attr.to(device), batchlist.to(device))).cpu()
-            else:
-                if used_qp:
-                    pred = torch.sigmoid(model(molecule.x.to(device), molecule.edge_index.to(device), molecule.qp_vector.to(device), batchlist.to(device))).cpu()
-                else:
-                    pred = torch.sigmoid(model(molecule.x.to(device), molecule.edge_index.to(device), batchlist.to(device))).cpu()
-            
+            pred = torch.sigmoid(model(molecule.x.to(device), molecule.edge_index.to(device), batchlist.to(device))).cpu()
             preds[molecule.datasetIndex] = torch.squeeze(pred).tolist()
     return preds
+
 
 predictions = {
     'type': 'node',
     'split': split,
     'valid': makePredictions(validMolecules, batchListV),
-    # 'test': makePredictions(testMolecules, batchListTe)
 }
 with open(predFilename, 'wb') as f:
     pickle.dump(predictions, f)
