@@ -1,6 +1,6 @@
 # ToxicityGNN
 
-A Graph Neural Network (GNN) framework for predicting **Sites of Metabolism (SOM)** — the specific atoms or bonds within a drug molecule most likely to undergo metabolic transformation. This project represents molecules as molecular graphs and trains GNNs to perform atom-level toxicity and metabolism predictions, with support for integrating molecular property descriptors from QikProp.
+A Graph Neural Network (GNN) framework for predicting drug toxicity. This project represents molecules as molecular graphs and trains GNNs to perform atom-level toxicity and metabolism predictions, with support for integrating molecular property descriptors from QikProp.
 
 ---
 
